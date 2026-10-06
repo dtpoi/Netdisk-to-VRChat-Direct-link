@@ -20,6 +20,18 @@
 
 问题反馈/联系：[dtpoi@foxmail.com](mailto:dtpoi@foxmail.com)
 
+## 上游同步
+
+2026 年 10 月 6 日核对了 [qaiu/netdisk-fast-download 0.4.7](https://github.com/qaiu/netdisk-fast-download/tree/ab8b6878375b2cc6964e07414be1708cae5a3368)，对应提交为 `ab8b687`（2026 年 9 月 25 日）。本项目移植的是六个平台的解析逻辑，上游的 Java 服务、数据库和其他平台解析器不在此项目中。
+
+本次补齐了此前移植中遗漏的兼容流程。
+
+- QQ闪传在文件列表接口失败或旧页面缺少 `fileset_id` 时，尝试从页面提取文件 UUID。
+- OneDrive 优先提交嵌入页的下载表单，失败时回退到内容 API。下载地址按 JSON 解码，保留签名参数；嵌入页请求只允许微软域名，响应内容上限为 8 MB。
+- 飞书文件夹按分页查找第一个可下载的根目录文件，最多检查 20 页，并在分页标记重复时终止请求。
+
+此次上游更新没有改动六个平台的解析文件。新增的平台和蓝奏等其他解析器更新未加入本站。
+
 ## 地址格式
 
 普通解析：
@@ -75,7 +87,7 @@ https://api.dtpoi.cn/vrchat/media.mp4?url=分享链接&pwd=可选提取码
 │   └── vrchat/
 │       ├── media.mp4.js        # 六平台通用 VRChat 路由
 │       └── qq/[file].js        # QQ闪传短路径
-├── tests/                      # Node.js 单元测试
+├── edgeone.json                # 静态资源响应头配置
 ├── index.html
 └── robots.txt
 ```
@@ -95,11 +107,11 @@ https://api.dtpoi.cn/vrchat/media.mp4?url=分享链接&pwd=可选提取码
 
 ```sh
 npm install
-npm test
 python3 -m http.server 4173
 ```
 
 本地静态服务器只能预览页面。Edge Functions 要在 EdgeOne 环境中运行。
+验证用例仅保存在本地 `.local-tests/`，不上传到 GitHub 或 EdgeOne。
 
 ## 部署到 EdgeOne Pages
 

@@ -242,28 +242,7 @@ function ensureHttpsUrl(value, serviceName) {
   }
 }
 
-export async function resolveQqsc(shareUrl) {
-  const pageResponse = await fetch(shareUrl, {
-    ...FETCH_OPTIONS,
-    redirect: "follow",
-    headers: {
-      accept: "text/html,application/xhtml+xml",
-      cookie: QQ_COMMON_HEADERS.cookie,
-      "user-agent": QQ_COMMON_HEADERS["user-agent"],
-    },
-  });
-
-  if (!pageResponse.ok) {
-    throw new Error(`QQ 分享页面请求失败（HTTP ${pageResponse.status}）`);
-  }
-
-  const html = await pageResponse.text();
-  const filesetId = FILESET_ID_RE.exec(html)?.[1];
-  const pageTitle = extractTitle(html);
-  if (!filesetId) {
-    throw new Error("QQ 分享链接无效、已过期，或页面结构已经变化");
-  }
-
+async function firstQqFile(filesetId, shareUrl) {
   const listData = await postJson(
     QQ_GET_FILE_LIST_API,
     {
@@ -301,6 +280,54 @@ export async function resolveQqsc(shareUrl) {
     (item) => !item?.is_dir && typeof item?.physical?.id === "string"
   );
   if (!file) throw new Error("QQ 分享中没有可直接下载的根目录文件");
+  return file;
+}
+
+function legacyQqFile(html, pageTitle) {
+  // QQscTool keeps this fallback for older single-file Nuxt pages.
+  const start = html.indexOf('"download_limit_status"');
+  if (start < 0) return null;
+  const marker = '},"';
+  const markerIndex = html.indexOf(marker, start);
+  if (markerIndex < 0) return null;
+  const idStart = markerIndex + marker.length;
+  const idEnd = html.indexOf('"', idStart);
+  if (idEnd < 0) return null;
+  const id = html.slice(idStart, idEnd);
+  if (!id || id.length > 1024 || /[\s<>]/.test(id)) return null;
+  return { physical: { id }, name: pageTitle };
+}
+
+export async function resolveQqsc(shareUrl) {
+  const pageResponse = await fetch(shareUrl, {
+    ...FETCH_OPTIONS,
+    redirect: "follow",
+    headers: {
+      accept: "text/html,application/xhtml+xml",
+      cookie: QQ_COMMON_HEADERS.cookie,
+      "user-agent": QQ_COMMON_HEADERS["user-agent"],
+    },
+  });
+
+  if (!pageResponse.ok) {
+    throw new Error(`QQ 分享页面请求失败（HTTP ${pageResponse.status}）`);
+  }
+
+  const html = await pageResponse.text();
+  const filesetId = FILESET_ID_RE.exec(html)?.[1];
+  const pageTitle = extractTitle(html);
+  let file;
+  if (filesetId) {
+    try {
+      file = await firstQqFile(filesetId, shareUrl);
+    } catch (error) {
+      file = legacyQqFile(html, pageTitle);
+      if (!file) throw error;
+    }
+  } else {
+    file = legacyQqFile(html, pageTitle);
+    if (!file) throw new Error("QQ 分享链接无效、已过期，或页面结构已经变化");
+  }
 
   const physicalId = file.physical.id;
   const fileName = file.name || pageTitle || "qqsc-download";
@@ -457,6 +484,89 @@ function oneDriveTarget(value) {
   return { resid, redeem, authkey };
 }
 
+async function readOneDriveText(response) {
+  const limit = 8 * 1024 * 1024;
+  if (Number(response.headers.get("content-length")) > limit) {
+    await response.body?.cancel();
+    throw new Error("OneDrive 响应内容超过 8 MB");
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel();
+        throw new Error("OneDrive 响应内容超过 8 MB");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+function oneDriveFormAction(html) {
+  const scripted = /["']action["']\s*,\s*(["'])(https:\/\/[^"'<>]+)\1/i.exec(html);
+  const form = /<form\b[^>]*\baction\s*=\s*(["'])(https:\/\/[^"'<>]+)\1/i.exec(html);
+  const value = scripted?.[2] || form?.[2];
+  if (!value) return null;
+  const decoded = decodeHtml(value)
+    .replace(/\\u([\da-f]{4})/gi, (_match, code) => String.fromCharCode(parseInt(code, 16)))
+    .replaceAll("\\/", "/");
+  const url = new URL(decoded);
+  const host = url.hostname;
+  if (
+    url.protocol !== "https:" || url.username || url.password || url.port ||
+    !(host === ONEDRIVE_LIVE_HOST || host === "my.microsoftpersonalcontent.com" ||
+      /^[a-z0-9-]+\.sharepoint\.com$/i.test(host))
+  ) {
+    throw new Error("OneDrive 嵌入页返回了非预期的下载地址");
+  }
+  return url;
+}
+
+function oneDriveDownloadFromText(text) {
+  const match = /"(?:@content\.)?downloadUrl"\s*:\s*("(?:\\.|[^"\\])*")/.exec(text);
+  if (!match) return null;
+  // JSON.parse restores \u0026, escaped slashes and other JSON URL escapes.
+  return ensureHttpsUrl(JSON.parse(match[1]), "OneDrive");
+}
+
+async function oneDriveEmbeddedDownload(html, badgerToken) {
+  const action = oneDriveFormAction(html);
+  if (!action) return null;
+  const response = await fetch(action, {
+    ...FETCH_OPTIONS,
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      accept: "text/html,application/xhtml+xml,application/json,*/*;q=0.8",
+      "content-type": "application/x-www-form-urlencoded",
+      origin: "https://onedrive.live.com",
+      referer: "https://onedrive.live.com/",
+      "user-agent": USER_AGENT,
+    },
+    body: new URLSearchParams({ badger_token: badgerToken }).toString(),
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`OneDrive 嵌入页下载请求失败（HTTP ${response.status}）`);
+  }
+  return oneDriveDownloadFromText(await readOneDriveText(response));
+}
+
 export async function resolveOneDrive(share) {
   let targetUrl = share.url;
   if (new URL(share.url).hostname === ONEDRIVE_SHORT_HOST) {
@@ -519,6 +629,14 @@ export async function resolveOneDrive(share) {
   )?.[1];
   if (!badgerToken) {
     throw new Error(`OneDrive 下载授权获取失败（HTTP ${embedResponse.status}）`);
+  }
+
+  const embedHtml = await readOneDriveText(embedResponse);
+  try {
+    const directUrl = await oneDriveEmbeddedDownload(embedHtml, badgerToken);
+    if (directUrl) return directUrl;
+  } catch {
+    // PodTool falls back to the content API when the embed flow is unavailable.
   }
 
   const data = await fetchJson(
@@ -734,30 +852,42 @@ async function firstFeishuFolderFile(share, cookies) {
   for (const type of [0, 2, 22, 44, 3, 30, 8, 11, 12, 84, 123, 124]) {
     query.append("obj_type", String(type));
   }
-  const data = await fetchJson(
-    `https://${share.tenant}.feishu.cn/space/api/explorer/v3/children/list/?${query}`,
-    {
-      headers: {
-        accept: "application/json, text/plain, */*",
-        cookie: cookies,
-        referer: share.url,
-        "user-agent": USER_AGENT,
+  const seenLabels = new Set();
+  for (let page = 0; page < 20; page += 1) {
+    const data = await fetchJson(
+      `https://${share.tenant}.feishu.cn/space/api/explorer/v3/children/list/?${query}`,
+      {
+        headers: {
+          accept: "application/json, text/plain, */*",
+          cookie: cookies,
+          referer: share.url,
+          "user-agent": USER_AGENT,
+        },
       },
-    },
-    "飞书"
-  );
-  if (data?.code !== 0) throw new Error(data?.msg || "飞书文件夹列表获取失败");
+      "飞书"
+    );
+    if (data?.code !== 0) throw new Error(data?.msg || "飞书文件夹列表获取失败");
 
-  const nodeIds = data?.data?.node_list;
-  const nodes = data?.data?.entities?.nodes;
-  if (!Array.isArray(nodeIds) || !nodes) throw new Error("飞书文件夹中没有可下载文件");
-  for (const nodeId of nodeIds) {
-    const node = nodes[nodeId];
-    if (node?.type === 12 && node?.obj_token && node.obj_token !== share.key) {
-      return node.obj_token;
+    const nodeIds = data?.data?.node_list;
+    const nodes = data?.data?.entities?.nodes;
+    if (!Array.isArray(nodeIds) || !nodes) throw new Error("飞书文件夹中没有可下载文件");
+    for (const nodeId of nodeIds) {
+      const node = nodes[nodeId];
+      if (node?.type === 12 && node?.obj_token && node.obj_token !== share.key) {
+        return node.obj_token;
+      }
     }
+    if (!data.data.has_more) {
+      throw new Error("飞书文件夹中没有可下载的根目录文件");
+    }
+    const nextLabel = data.data.last_label;
+    if (typeof nextLabel !== "string" || !nextLabel || seenLabels.has(nextLabel)) {
+      throw new Error("飞书文件夹分页信息无效");
+    }
+    seenLabels.add(nextLabel);
+    query.set("last_label", nextLabel);
   }
-  throw new Error("飞书文件夹中没有可下载的根目录文件");
+  throw new Error("飞书文件夹前 1000 项中没有可下载的根目录文件");
 }
 
 async function resolveFeishu(share) {
