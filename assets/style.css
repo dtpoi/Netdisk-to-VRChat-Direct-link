@@ -1159,7 +1159,8 @@ body.is-ready .motion-fade {
 .api-card {
   display: grid;
   grid-template-columns: 1fr 0.75fr;
-  gap: clamp(40px, 8vw, 120px);
+  column-gap: clamp(40px, 8vw, 120px);
+  row-gap: clamp(40px, 5vw, 70px);
   align-items: end;
   max-width: 1380px;
   min-height: 520px;
@@ -1168,6 +1169,75 @@ body.is-ready .motion-fade {
   overflow: hidden;
   background: var(--ink);
   color: var(--white);
+}
+
+.changelog {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.changelog-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  margin-bottom: 26px;
+}
+
+.changelog-heading h2 {
+  margin: 0;
+  color: var(--white);
+  font-size: clamp(22px, 2.5vw, 30px);
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.changelog-heading > span {
+  color: var(--muted-on-dark);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+}
+
+.changelog-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 30px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.changelog-entry {
+  min-width: 0;
+  padding-top: 22px;
+  border-top: 1px solid rgba(255, 255, 255, 0.28);
+}
+
+.changelog-entry time {
+  display: block;
+  color: var(--yellow);
+  font-family: var(--font-rounded);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  line-height: 1.6;
+}
+
+.changelog-entry h3 {
+  margin: 12px 0 8px;
+  color: var(--white);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.changelog-entry p {
+  margin: 0;
+  color: var(--muted-on-dark);
+  font-size: 14px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
 }
 
 .api-copy {
@@ -1541,6 +1611,11 @@ body.is-ready .motion-fade {
 
   .api-section { padding: 18px; }
   .api-card { grid-template-columns: 1fr; align-items: start; min-height: 560px; padding: 34px 24px; }
+  .changelog-heading { margin-bottom: 22px; }
+  .changelog-heading > span { font-size: 9px; }
+  .changelog-list { grid-template-columns: 1fr; gap: 24px; }
+  .changelog-entry { padding-top: 18px; }
+  .changelog-entry p { font-size: 13px; }
   .api-copy { gap: 50px; }
   .api-copy h2 { font-size: 17vw; }
 
